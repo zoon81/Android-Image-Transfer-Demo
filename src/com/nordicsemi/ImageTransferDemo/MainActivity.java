@@ -16,7 +16,9 @@
 
 package com.nordicsemi.ImageTransferDemo;
 
-import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.text.DateFormat;
@@ -39,10 +41,10 @@ import android.content.ServiceConnection;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
-import android.os.Message;
 import android.support.v4.content.LocalBroadcastManager;
 import android.text.Html;
 import android.util.Log;
@@ -74,12 +76,13 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     private String mLogMessage = "";
 
     private TextView mTextViewLog, mTextViewFileLabel, mTextViewPictureStatus, mTextViewPictureFpsStatus, mTextViewConInt, mTextViewMtu;
-    private Button mBtnTakePicture, mBtnStartStream;
+    private Button mBtnDownload, mBtnUpload, mBtnChoseFile;
     private ProgressBar mProgressBarFileStatus;
     private ImageView mMainImage;
     private Spinner mSpinnerResolution, mSpinnerPhy;
 
     private int mState = UART_PROFILE_DISCONNECTED;
+    private int mByteToSend = 0;
     private ImageTransferService mService = null;
     private BluetoothDevice mDevice = null;
     private BluetoothAdapter mBtAdapter = null;
@@ -87,16 +90,19 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     private boolean mMtuRequested;
     private byte []mUartData = new byte[6];
     private long mStartTimeImageTransfer;
+    private byte[] mFileTransferBuffer;
+
+    private static final int OPEN_REQUEST_CODE = 41;
 
     // File transfer variables
     private int mBytesTransfered = 0, mBytesTotal = 0;
     private byte []mDataBuffer;
-    private boolean mStreamActive = false;
+    private boolean mUploadActive = false;
 
     private ProgressDialog mConnectionProgDialog;
 
     public enum AppRunMode {Disconnected, Connected, ConnectedDuringSingleTransfer, ConnectedDuringStream};
-    public enum BleCommand {NoCommand, StartSingleCapture, StartStreaming, StopStreaming, ChangeResolution, ChangePhy, GetBleParams};
+    public enum BleCommand {NoCommand, StartSingleCapture, StartStreaming, StopStreaming, ChangeResolution, ChangePhy, GetBleParams, SetIncommingFileParams};
 
     Handler guiUpdateHandler = new Handler();
     Runnable guiUpdateRunnable = new Runnable(){
@@ -131,8 +137,10 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         mTextViewConInt = (TextView)findViewById(R.id.textViewCI);
         mTextViewMtu = (TextView)findViewById(R.id.textViewMTU);
         mProgressBarFileStatus = (ProgressBar)findViewById(R.id.progressBarFile);
-        mBtnTakePicture = (Button)findViewById(R.id.buttonTakePicture);
-        mBtnStartStream = (Button)findViewById(R.id.buttonStartStream);
+        mBtnDownload = (Button)findViewById(R.id.buttonTakePicture);
+        mBtnUpload = (Button)findViewById(R.id.buttonUpload);
+        mBtnUpload.setEnabled(false);
+        mBtnChoseFile = (Button)findViewById(R.id.button_chosefile);
         mMainImage = (ImageView)findViewById(R.id.imageTransfered);
         mSpinnerResolution = (Spinner)findViewById(R.id.spinnerResolution);
         mSpinnerResolution.setSelection(1);
@@ -168,35 +176,57 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             }
         });
 
-        mBtnTakePicture.setOnClickListener(new View.OnClickListener() {
+        mBtnDownload.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if(mService != null){
-                    mService.sendCommand(BleCommand.StartSingleCapture.ordinal(), null);
-                    setGuiByAppMode(AppRunMode.ConnectedDuringSingleTransfer);
+                    // mService.sendCommand(BleCommand.StartSingleCapture.ordinal(), null);
+                    // setGuiByAppMode(AppRunMode.ConnectedDuringSingleTransfer);
+                    // 32byte Filename, 4byte files_size, 1byte control
+                    byte[] incommingFileParams = new byte[38];
+                    byte[] incommingFileName = new byte[32];
+                    byte[] incommingFileSize = new byte[4];
+                    byte[] incommingFileOperation = new byte[1];
+                    try {
+                        incommingFileName = "ANIM.BIN".getBytes("UTF-8");
+                    } catch (UnsupportedEncodingException e) {
+                        e.printStackTrace();
+                    }
+                    incommingFileSize = ByteBuffer.allocate(4).putInt(mFileTransferBuffer.length).array();
+                    incommingFileOperation[0] = 0x00;
+                    System.arraycopy(incommingFileName, 0, incommingFileParams, 0, incommingFileName.length);
+                    System.arraycopy(incommingFileSize, 0, incommingFileParams, 32, incommingFileSize.length);
+                    System.arraycopy(incommingFileOperation, 0, incommingFileParams, 37, incommingFileOperation.length);
+                    incommingFileParams[37] = (byte) 0x00;
+                    mService.sendCommand(BleCommand.SetIncommingFileParams.ordinal(), incommingFileParams);
                 }
             }
         });
 
-        mBtnStartStream.setOnClickListener(new View.OnClickListener() {
+        mBtnUpload.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if(mService != null){
-                    if(!mStreamActive) {
-                        mStreamActive = true;
-
-                        mService.sendCommand(BleCommand.StartStreaming.ordinal(), null);
-                        setGuiByAppMode(AppRunMode.ConnectedDuringStream);
-                    }
-                    else {
-                        mStreamActive = false;
-
-                        mService.sendCommand(BleCommand.StopStreaming.ordinal(), null);
-                        setGuiByAppMode(AppRunMode.Connected);
+                    if(!mUploadActive) {
+                        mUploadActive = true;
+                        mService.writeIncommingFileCharacteristic(mFileTransferBuffer);
+                        mStartTimeImageTransfer = System.currentTimeMillis();
                     }
                 }
             }
         });
+
+        mBtnChoseFile.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("text/plain");
+                startActivityForResult(intent, OPEN_REQUEST_CODE);
+            }
+        });
+
+
 
         mSpinnerResolution.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
@@ -257,19 +287,16 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         switch(appMode)
         {
             case Connected:
-                mBtnTakePicture.setEnabled(true);
-                mBtnStartStream.setEnabled(true);
+                mBtnDownload.setEnabled(true);
                 btnConnectDisconnect.setText("Disconnect");
-                mBtnStartStream.setText("Start Stream");
                 mSpinnerResolution.setEnabled(true);
                 mSpinnerPhy.setEnabled(true);
                 break;
 
             case Disconnected:
-                mBtnTakePicture.setEnabled(false);
-                mBtnStartStream.setEnabled(false);
+                mBtnDownload.setEnabled(false);
+                mBtnUpload.setEnabled(false);
                 btnConnectDisconnect.setText("Connect");
-                mBtnStartStream.setText("Start Stream");
                 mTextViewPictureStatus.setVisibility(View.INVISIBLE);
                 mTextViewPictureFpsStatus.setVisibility(View.INVISIBLE);
                 mSpinnerResolution.setEnabled(false);
@@ -279,14 +306,12 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                 break;
 
             case ConnectedDuringSingleTransfer:
-                mBtnTakePicture.setEnabled(false);
-                mBtnStartStream.setEnabled(false);
+                mBtnDownload.setEnabled(false);
+                mBtnUpload.setEnabled(false);
                 break;
 
             case ConnectedDuringStream:
-                mBtnTakePicture.setEnabled(false);
-                mBtnStartStream.setEnabled(true);
-                mBtnStartStream.setText("Stop Stream");
+                mBtnDownload.setEnabled(false);
                 break;
         }
     }
@@ -377,7 +402,8 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                         String elapsedSecondsString = df.format(elapsedSeconds);
                         String kbpsString = df.format((float)mDataBuffer.length / elapsedSeconds * 8.0f / 1000.0f);
                         //writeToLog("Completed in " + elapsedSecondsString + " seconds. " + kbpsString + " kbps", AppLogFontType.APP_NORMAL);
-                        mTextViewPictureStatus.setText(String.valueOf(mDataBuffer.length / 1024) + "kB - " + elapsedSecondsString + " seconds - " + kbpsString + " kbps");
+                        mTextViewPictureStatus.setText(String.valueOf(mDataBuffer.length / 1024)
+                                + "kB - " + elapsedSecondsString + " seconds - " + kbpsString + " kbps");
                         mTextViewPictureStatus.setVisibility(View.VISIBLE);
                         mTextViewPictureFpsStatus.setText(df.format(1.0f / elapsedSeconds)  + " FPS");
                         mTextViewPictureFpsStatus.setVisibility(View.VISIBLE);
@@ -401,7 +427,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                         } catch (Exception e) {
                             Log.w(TAG, "Bitmapfactory fail :(");
                         }
-                        if(!mStreamActive) {
+                        if(!mUploadActive) {
                             setGuiByAppMode(AppRunMode.Connected);
                         }
                     }
@@ -467,6 +493,16 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             writeToLog("APP: Invalid BLE service, disconnecting!",  AppLogFontType.APP_ERROR);
             mService.disconnect();
         }
+
+        if (action.equals(ImageTransferService.ACTION_GATT_TRANSFER_FINISHED)) {
+            long elapsedTime = System.currentTimeMillis() - mStartTimeImageTransfer;
+            float elapsedSeconds = (float)elapsedTime / 1000.0f;
+            DecimalFormat df = new DecimalFormat("0.0");
+            df.setMaximumFractionDigits(1);
+            String elapsedSecondsString = df.format(elapsedSeconds);
+            String kbpsString = df.format((float)mFileTransferBuffer.length / elapsedSeconds * 8.0f / 1000.0f);
+            writeToLog("Completed in " + elapsedSecondsString + " seconds. " + kbpsString + " kbps", AppLogFontType.APP_NORMAL);
+        }
         }
     };
 
@@ -482,6 +518,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         intentFilter.addAction(ImageTransferService.ACTION_GATT_DISCONNECTED);
         intentFilter.addAction(ImageTransferService.ACTION_GATT_SERVICES_DISCOVERED);
         intentFilter.addAction(ImageTransferService.ACTION_DATA_AVAILABLE);
+        intentFilter.addAction(ImageTransferService.ACTION_GATT_TRANSFER_FINISHED);
         intentFilter.addAction(ImageTransferService.ACTION_IMG_INFO_AVAILABLE);
         intentFilter.addAction(ImageTransferService.DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER);
         return intentFilter;
@@ -571,11 +608,41 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                     finish();
                 }
                 break;
+            case OPEN_REQUEST_CODE:
+                if (resultCode == Activity.RESULT_OK)
+                {
+                    Uri currentUri = data.getData();
+                    try {
+                        mFileTransferBuffer = readFileContent(currentUri);
+                        mBytesTotal = mFileTransferBuffer.length;
+                        mDataBuffer = new byte[mBytesTotal];
+                        mTextViewFileLabel.setText("Incoming file: " + String.valueOf(mBytesTotal) + " bytes.");
+                        mBytesTransfered = 0;
+                        if(!mMtuRequested){
+                            mService.requestMtu(247);
+                            writeToLog("Requesting 247 byte MTU from app", AppLogFontType.APP_NORMAL);
+                            mMtuRequested = true;
+                            mTextViewMtu.setText("247 bytes");
+                        }
+                        mBtnUpload.setEnabled(true);
+                    } catch (IOException e) {
+                        // Handle error here
+                    }
+                }
+                break;
 
             default:
                 Log.e(TAG, "wrong request code");
                 break;
         }
+    }
+
+    private byte[] readFileContent(Uri uri) throws IOException {
+        InputStream inputStream = getContentResolver().openInputStream(uri);
+        byte[] mBuffer = new byte[inputStream.available()];
+        inputStream.read(mBuffer, 0, inputStream.available());
+        inputStream.close();
+        return mBuffer;
     }
 
     @Override

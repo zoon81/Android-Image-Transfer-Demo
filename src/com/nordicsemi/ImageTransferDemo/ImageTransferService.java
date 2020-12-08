@@ -17,8 +17,12 @@ import android.os.IBinder;
 import android.support.v4.content.LocalBroadcastManager;
 import android.util.Log;
 
+import java.nio.charset.Charset;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Queue;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Service for managing connection and data communication with a GATT server hosted on a
@@ -32,6 +36,11 @@ public class ImageTransferService extends Service {
     private String mBluetoothDeviceAddress;
     private BluetoothGatt mBluetoothGatt;
     private int mConnectionState = STATE_DISCONNECTED;
+    private volatile boolean isWriting;
+    private Queue<byte[]> sendQueue; //To be inited with sendQueue = new ConcurrentLinkedQueue<String>();
+    private BluetoothGattCharacteristic FtChar;
+    private int current_mtu_size;
+
 
     private static final int STATE_DISCONNECTED = 0;
     private static final int STATE_CONNECTING = 1;
@@ -45,12 +54,16 @@ public class ImageTransferService extends Service {
             "com.nordicsemi.ImageTransferDemo.ACTION_GATT_SERVICES_DISCOVERED";
     public final static String ACTION_DATA_AVAILABLE =
             "com.nordicsemi.ImageTransferDemo.ACTION_DATA_AVAILABLE";
+    public final static String ACTION_DATA_WRITTEN =
+            "com.nordicsemi.ImageTransferDemo.ACTION_GATT_TRANSFER_FINISHED";
     public final static String ACTION_IMG_INFO_AVAILABLE =
             "com.nordicsemi.ImageTransferDemo.ACTION_IMG_INFO_AVAILABLE";
     public final static String EXTRA_DATA =
             "com.nordicsemi.ImageTransferDemo.EXTRA_DATA";
     public final static String DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER =
             "com.nordicsemi.ImageTransferDemo.DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER";
+    public final static String ACTION_GATT_TRANSFER_FINISHED =
+            "com.nordicsemi.ImageTransferDemo.ACTION_GATT_TRANSFER_FINISHED";
 
     public static final UUID TX_POWER_UUID = UUID.fromString("00001804-0000-1000-8000-00805f9b34fb");
     public static final UUID TX_POWER_LEVEL_UUID = UUID.fromString("00002a07-0000-1000-8000-00805f9b34fb");
@@ -62,6 +75,7 @@ public class ImageTransferService extends Service {
     public static final UUID RX_CHAR_UUID       = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca3e");
     public static final UUID TX_CHAR_UUID       = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca3e");
     public static final UUID IMG_INFO_CHAR_UUID = UUID.fromString("6e400004-b5a3-f393-e0a9-e50e24dcca3e");
+    public static final UUID INCOMING_FILE_CHAR_UUID = UUID.fromString("6e400005-b5a3-f393-e0a9-e50e24dcca3e");
 
     // Implements callback methods for GATT events that the app cares about.  For example,
     // connection change and services discovered.
@@ -122,7 +136,19 @@ public class ImageTransferService extends Service {
 
         @Override
         public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status){
-            Log.w(TAG, "OnCharWrite");
+            super.onCharacteristicWrite(gatt, characteristic, status);
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d("TAG","onCharacteristicWrite(): Successful");
+                if(isWriting){
+                    isWriting = false;
+                    boolean isWriteInProgress = _send();
+                    if(isWriteInProgress){
+                        broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic);
+                    } else {
+                        broadcastUpdate(ACTION_GATT_TRANSFER_FINISHED);
+                    }
+                }
+            }
         }
 
         @Override
@@ -148,6 +174,7 @@ public class ImageTransferService extends Service {
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
             Log.w(TAG, "MTU changed: " + String.valueOf(mtu));
+            current_mtu_size = mtu;
         }
     };
 
@@ -168,6 +195,8 @@ public class ImageTransferService extends Service {
             // Log.d(TAG, String.format("Received TX: %d",characteristic.getValue() ));
             intent.putExtra(EXTRA_DATA, characteristic.getValue());
         } else if(IMG_INFO_CHAR_UUID.equals(characteristic.getUuid())) {
+            intent.putExtra(EXTRA_DATA, characteristic.getValue());
+        } else if (INCOMING_FILE_CHAR_UUID.equals(characteristic.getUuid())){
             intent.putExtra(EXTRA_DATA, characteristic.getValue());
         } else {
 
@@ -218,7 +247,7 @@ public class ImageTransferService extends Service {
             Log.e(TAG, "Unable to obtain a BluetoothAdapter.");
             return false;
         }
-
+        sendQueue = new ConcurrentLinkedQueue<byte[]>();
         return true;
     }
 
@@ -286,7 +315,6 @@ public class ImageTransferService extends Service {
 
     public void requestMtu(int mtu){
         Log.i(TAG, "Requesting 247 byte MTU");
-
         mBluetoothGatt.requestMtu(mtu);
     }
 
@@ -391,6 +419,47 @@ public class ImageTransferService extends Service {
         boolean status = mBluetoothGatt.writeCharacteristic(RxChar);
 
         Log.d(TAG, "write TXchar - status=" + status);
+    }
+
+    public void writeIncommingFileCharacteristic(byte[] data)
+    {
+        BluetoothGattService RxService = mBluetoothGatt.getService(IMAGE_TRANSFER_SERVICE_UUID);
+        if (RxService == null) {
+            showMessage("Rx service not found!");
+            broadcastUpdate(DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER);
+            return;
+        }
+        FtChar = RxService.getCharacteristic(INCOMING_FILE_CHAR_UUID);
+        if (FtChar == null) {
+            showMessage("FileTransfer characteristic not found!");
+            broadcastUpdate(DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER);
+            return;
+        }
+        int counter = 0;
+        int payload_size = current_mtu_size - 1 - 2;
+        while (counter <= data.length - payload_size) {
+            sendQueue.add(Arrays.copyOfRange(data, counter, counter + payload_size));
+            counter += payload_size;
+        }
+        if(data.length - counter > 0){
+            sendQueue.add(Arrays.copyOfRange(data, counter, data.length));
+        }
+
+        if (!isWriting){
+            boolean status = _send();
+            Log.d(TAG, "write Ftchar - status=" + status);
+        }
+    }
+
+    private boolean _send() {
+        if (sendQueue.isEmpty()) {
+            Log.d("TAG", "_send(): EMPTY QUEUE");
+            return false;
+        }
+        Log.d(TAG, "_send(): Sending: "+sendQueue.peek());
+        FtChar.setValue(sendQueue.poll());
+        isWriting = true; // Set the write in progress flag
+        return mBluetoothGatt.writeCharacteristic(FtChar);
     }
 
     public void sendCommand(int command, byte []data) {
