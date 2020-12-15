@@ -82,10 +82,12 @@ public class ImageTransferService extends Service {
     public static final UUID NOTIFICATION_CHAR_UUID = UUID.fromString("6e400006-b5a3-f393-e0a9-e50e24dcca3e");
 
     public static final int targetMtu = 243;
-    public static final int smallestSupportedMtu = 23;
+    public static final int smallestSupportedMtu = 123;
 
     private static final  int target_mtu_payload_size = targetMtu - 3;
     private static final  int smallestSupported_mtu_payload_size = smallestSupportedMtu - 3;
+
+    private static final int BULK_DATA_LEN = 68 * target_mtu_payload_size; // This cache can store up to 68 payloads
 
     // Implements callback methods for GATT events that the app cares about.  For example,
     // connection change and services discovered.
@@ -168,7 +170,7 @@ public class ImageTransferService extends Service {
         public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
             Log.w(TAG, "OnDescWrite!!!");
             if(TX_CHAR_UUID.equals(descriptor.getCharacteristic().getUuid())) {
-                // When the first notification is set we can set the second
+                // When the first notification is set we can set all others
                 BluetoothGattService ImageTransferService = mBluetoothGatt.getService(IMAGE_TRANSFER_SERVICE_UUID);
                 BluetoothGattCharacteristic ImgInfoChar = ImageTransferService.getCharacteristic(IMG_INFO_CHAR_UUID);
                 if (ImgInfoChar == null) {
@@ -181,6 +183,18 @@ public class ImageTransferService extends Service {
                 BluetoothGattDescriptor descriptor2 = ImgInfoChar.getDescriptor(CCCD);
                 descriptor2.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
                 mBluetoothGatt.writeDescriptor(descriptor2);
+
+                BluetoothGattCharacteristic NotiChar = ImageTransferService.getCharacteristic(NOTIFICATION_CHAR_UUID);
+                if (ImgInfoChar == null) {
+                    showMessage("Notification characteristic not found!");
+                    broadcastUpdate(DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER);
+                    return;
+                }
+                mBluetoothGatt.setCharacteristicNotification(ImgInfoChar, true);
+
+                BluetoothGattDescriptor descriptor3 = ImgInfoChar.getDescriptor(CCCD);
+                descriptor2.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                mBluetoothGatt.writeDescriptor(descriptor3);
             }
         }
 
@@ -392,8 +406,7 @@ public class ImageTransferService extends Service {
      *
      * @return
      */
-    public void enableTXNotification()
-    {
+    public void enableTXNotification() {
         Log.w(TAG, "enable TX not.");
         BluetoothGattService ImageTransferService = mBluetoothGatt.getService(IMAGE_TRANSFER_SERVICE_UUID);
         if (ImageTransferService == null) {
@@ -417,30 +430,6 @@ public class ImageTransferService extends Service {
 
     }
 
-    public void enableFtsNotification()
-    {
-        Log.w(TAG, "enable TX not.");
-        BluetoothGattService ImageTransferService = mBluetoothGatt.getService(IMAGE_TRANSFER_SERVICE_UUID);
-        if (ImageTransferService == null) {
-            showMessage("Rx service not found!");
-            broadcastUpdate(DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER);
-            return;
-        }
-
-        BluetoothGattCharacteristic NotificationChar = ImageTransferService.getCharacteristic(NOTIFICATION_CHAR_UUID);
-        if (NotificationChar == null) {
-            showMessage("Tx characteristic not found!");
-            broadcastUpdate(DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER);
-            return;
-        }
-        mBluetoothGatt.setCharacteristicNotification(NotificationChar, true);
-
-        BluetoothGattDescriptor descriptor = NotificationChar.getDescriptor(CCCD);
-        descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-        mBluetoothGatt.writeDescriptor(descriptor);
-
-    }
-
     public void writeRXCharacteristic(byte[] value)
     {
         BluetoothGattService RxService = mBluetoothGatt.getService(IMAGE_TRANSFER_SERVICE_UUID);
@@ -461,7 +450,7 @@ public class ImageTransferService extends Service {
         Log.d(TAG, "write TXchar - status=" + status);
     }
 
-    public void writeIncommingFileCharacteristic(byte[] data)
+    public void writeIncomingFileCharacteristic(byte[] data)
     {
         BluetoothGattService RxService = mBluetoothGatt.getService(IMAGE_TRANSFER_SERVICE_UUID);
         if (RxService == null) {
@@ -483,11 +472,14 @@ public class ImageTransferService extends Service {
         if(data.length - counter > 0){
             sendQueue.add(Arrays.copyOfRange(data, counter, data.length));
         }
-        bulk_data_written = 0;
-        if (!isWriting){
-            boolean status = _send();
-            Log.d(TAG, "write Ftchar - status=" + status);
+    }
+
+    public boolean fts_start_transmit(){
+        if( isWriting ){
+            return false;
         }
+        bulk_data_written = 0;
+        return _send();
     }
 
     private boolean _send() {
@@ -495,16 +487,26 @@ public class ImageTransferService extends Service {
             Log.d("TAG", "_send(): EMPTY QUEUE");
             return false;
         }
+
+        if(bulk_data_written >= BULK_DATA_LEN){
+            Log.d("TAG", "_send(): Bulk data transfer limit reached");
+            isWriting = false;
+            return false;
+        }
+
         int nof_elements = (current_mtu_size - 3) / (smallestSupported_mtu_payload_size);
-        int current_payload_size = nof_elements * smallestSupported_mtu_payload_size;
         if( sendQueue.size() < nof_elements){
             nof_elements = sendQueue.size();
         }
 
-        Log.d(TAG, "_send(): Sending: " + current_payload_size + " byte. Pulling " + nof_elements + " number of elements from queue.");
+        int current_payload_size = nof_elements * smallestSupported_mtu_payload_size;
+        // Log.d(TAG, "_send(): Sending: " + current_payload_size + " byte. Pulling " + nof_elements + " number of elements from queue.");
         byte[] payload = new byte[current_payload_size];
         for(int i = 0; i < nof_elements; i++){
             byte[] queue_data = sendQueue.poll();
+            if(sendQueue.size() < 10){
+                Log.i("TAG", "queue almost empty");
+            }
             System.arraycopy(queue_data, 0, payload, i * smallestSupported_mtu_payload_size,  queue_data.length);
         }
         FtChar.setValue(payload);

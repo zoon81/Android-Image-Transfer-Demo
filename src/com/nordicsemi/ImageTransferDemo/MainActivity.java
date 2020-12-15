@@ -213,6 +213,8 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                     System.arraycopy(incomingFileOperation, 0, incomingFileParams, 37, incomingFileOperation.length);
                     incomingFileParams[37] = (byte) 0x00;
                     mService.sendCommand(BleCommand.SetIncommingFileParams.ordinal(), incomingFileParams);
+                    mService.writeIncomingFileCharacteristic(mFileTransferBuffer);
+                    mStartTimeImageTransfer = System.currentTimeMillis();
                 }
             }
         });
@@ -223,7 +225,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                 if(mService != null){
                     if(!mUploadActive) {
                         mUploadActive = true;
-                        mService.writeIncommingFileCharacteristic(mFileTransferBuffer);
+                        mService.writeIncomingFileCharacteristic(mFileTransferBuffer);
                         mStartTimeImageTransfer = System.currentTimeMillis();
                     }
                 }
@@ -392,7 +394,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         //*********************//
         if (action.equals(ImageTransferService.ACTION_GATT_SERVICES_DISCOVERED)) {
             mService.enableTXNotification();
-            mService.enableFtsNotification();
             mService.sendCommand(BleCommand.GetBleParams.ordinal(), null);
             setGuiByAppMode(AppRunMode.Connected);
         }
@@ -495,6 +496,26 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                     writeToLog("Parameters updated.", AppLogFontType.APP_NORMAL);
                                 }
                                 break;
+                            case 3:
+                                switch(txValue[1]) {
+                                    case 1:
+                                        // Ready to receive signal from NRF52
+                                        mService.fts_start_transmit();
+                                        break;
+                                    case 2:
+                                        // Receive finished
+                                        long elapsedTime = System.currentTimeMillis() - mStartTimeImageTransfer;
+                                        float elapsedSeconds = (float)elapsedTime / 1000.0f;
+                                        DecimalFormat df = new DecimalFormat("0.0");
+                                        df.setMaximumFractionDigits(1);
+                                        String elapsedSecondsString = df.format(elapsedSeconds);
+                                        String kbpsString = df.format((float)mFileTransferBuffer.length / elapsedSeconds * 8.0f / 1000.0f);
+                                        writeToLog("Completed in " + elapsedSecondsString + " seconds. " + kbpsString + " kbps", AppLogFontType.APP_NORMAL);
+                                        break;
+                                    default:
+                                        break;
+                                }
+                                break;
                         }
                     } catch (Exception e) {
                         Log.e(TAG, e.toString());
@@ -510,13 +531,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         }
 
         if (action.equals(ImageTransferService.ACTION_GATT_TRANSFER_FINISHED)) {
-            long elapsedTime = System.currentTimeMillis() - mStartTimeImageTransfer;
-            float elapsedSeconds = (float)elapsedTime / 1000.0f;
-            DecimalFormat df = new DecimalFormat("0.0");
-            df.setMaximumFractionDigits(1);
-            String elapsedSecondsString = df.format(elapsedSeconds);
-            String kbpsString = df.format((float)mFileTransferBuffer.length / elapsedSeconds * 8.0f / 1000.0f);
-            writeToLog("Completed in " + elapsedSecondsString + " seconds. " + kbpsString + " kbps", AppLogFontType.APP_NORMAL);
             mUploadActive = false;
             setGuiByAppMode(AppRunMode.Connected);
         }
@@ -525,10 +539,12 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             final byte[] txValue = intent.getByteArrayExtra(ImageTransferService.EXTRA_DATA);
             switch(txValue[0]) {
                 case 1:
-                    mService.requestMtu(ImageTransferService.smallestSupportedMtu);
+                    // Ready to receive
+                    mService.writeIncomingFileCharacteristic(mFileTransferBuffer);
+                    mStartTimeImageTransfer = System.currentTimeMillis();
+                    mService.fts_start_transmit();
                     break;
                 case 2:
-                    mService.requestMtu(ImageTransferService.targetMtu);
                     break;
                 default:
                     break;
