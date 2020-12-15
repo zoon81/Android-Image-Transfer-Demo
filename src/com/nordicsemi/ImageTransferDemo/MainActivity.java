@@ -41,6 +41,7 @@ import android.content.ServiceConnection;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.Image;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -91,6 +92,8 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     private byte []mUartData = new byte[6];
     private long mStartTimeImageTransfer;
     private byte[] mFileTransferBuffer;
+
+    private Uri m_picked_file_uri;
 
     private static final int OPEN_REQUEST_CODE = 41;
 
@@ -182,23 +185,34 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                 if(mService != null){
                     // mService.sendCommand(BleCommand.StartSingleCapture.ordinal(), null);
                     // setGuiByAppMode(AppRunMode.ConnectedDuringSingleTransfer);
+
                     // 32byte Filename, 4byte files_size, 1byte control
-                    byte[] incommingFileParams = new byte[38];
-                    byte[] incommingFileName = new byte[32];
-                    byte[] incommingFileSize = new byte[4];
-                    byte[] incommingFileOperation = new byte[1];
+                    String path = m_picked_file_uri.getPath();
+                    String filename = path.substring(path.lastIndexOf("/")+1);
+                    String file;
+                    if (filename.indexOf(".") > 0) {
+                        file = filename.substring(0, filename.lastIndexOf("."));
+                    } else {
+                        file =  filename;
+                    }
+
+                    byte[] incomingFileParams = new byte[38];
+                    byte[] incomingFileName = new byte[32];
+                    byte[] incomingFileSize;
+                    byte[] incomingFileOperation = new byte[1];
                     try {
-                        incommingFileName = "ANIM.BIN".getBytes("UTF-8");
+                        incomingFileName = filename.getBytes("UTF-8");
                     } catch (UnsupportedEncodingException e) {
                         e.printStackTrace();
                     }
-                    incommingFileSize = ByteBuffer.allocate(4).putInt(mFileTransferBuffer.length).array();
-                    incommingFileOperation[0] = 0x00;
-                    System.arraycopy(incommingFileName, 0, incommingFileParams, 0, incommingFileName.length);
-                    System.arraycopy(incommingFileSize, 0, incommingFileParams, 32, incommingFileSize.length);
-                    System.arraycopy(incommingFileOperation, 0, incommingFileParams, 37, incommingFileOperation.length);
-                    incommingFileParams[37] = (byte) 0x00;
-                    mService.sendCommand(BleCommand.SetIncommingFileParams.ordinal(), incommingFileParams);
+
+                    incomingFileSize = ByteBuffer.allocate(4).putInt(mFileTransferBuffer.length).array();
+                    incomingFileOperation[0] = 0x00;
+                    System.arraycopy(incomingFileName, 0, incomingFileParams, 0, incomingFileName.length);
+                    System.arraycopy(incomingFileSize, 0, incomingFileParams, 32, incomingFileSize.length);
+                    System.arraycopy(incomingFileOperation, 0, incomingFileParams, 37, incomingFileOperation.length);
+                    incomingFileParams[37] = (byte) 0x00;
+                    mService.sendCommand(BleCommand.SetIncommingFileParams.ordinal(), incomingFileParams);
                 }
             }
         });
@@ -378,6 +392,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         //*********************//
         if (action.equals(ImageTransferService.ACTION_GATT_SERVICES_DISCOVERED)) {
             mService.enableTXNotification();
+            mService.enableFtsNotification();
             mService.sendCommand(BleCommand.GetBleParams.ordinal(), null);
             setGuiByAppMode(AppRunMode.Connected);
         }
@@ -462,7 +477,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                 short mtu = mtuBB.getShort();
                                 mTextViewMtu.setText(String.valueOf(mtu) + " bytes");
                                 if(!mMtuRequested && mtu < 64){
-                                    mService.requestMtu(247);
+                                    mService.requestMtu(ImageTransferService.targetMtu);
                                     writeToLog("Requesting 247 byte MTU from app", AppLogFontType.APP_NORMAL);
                                     mMtuRequested = true;
                                 }
@@ -502,6 +517,22 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             String elapsedSecondsString = df.format(elapsedSeconds);
             String kbpsString = df.format((float)mFileTransferBuffer.length / elapsedSeconds * 8.0f / 1000.0f);
             writeToLog("Completed in " + elapsedSecondsString + " seconds. " + kbpsString + " kbps", AppLogFontType.APP_NORMAL);
+            mUploadActive = false;
+            setGuiByAppMode(AppRunMode.Connected);
+        }
+
+        if(action.equals(ImageTransferService.ACTION_FTS_NOTIFICATION)){
+            final byte[] txValue = intent.getByteArrayExtra(ImageTransferService.EXTRA_DATA);
+            switch(txValue[0]) {
+                case 1:
+                    mService.requestMtu(ImageTransferService.smallestSupportedMtu);
+                    break;
+                case 2:
+                    mService.requestMtu(ImageTransferService.targetMtu);
+                    break;
+                default:
+                    break;
+            }
         }
         }
     };
@@ -520,6 +551,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         intentFilter.addAction(ImageTransferService.ACTION_DATA_AVAILABLE);
         intentFilter.addAction(ImageTransferService.ACTION_GATT_TRANSFER_FINISHED);
         intentFilter.addAction(ImageTransferService.ACTION_IMG_INFO_AVAILABLE);
+        intentFilter.addAction(ImageTransferService.ACTION_FTS_NOTIFICATION);
         intentFilter.addAction(ImageTransferService.DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER);
         return intentFilter;
     }
@@ -611,15 +643,15 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             case OPEN_REQUEST_CODE:
                 if (resultCode == Activity.RESULT_OK)
                 {
-                    Uri currentUri = data.getData();
+                   m_picked_file_uri = data.getData();
                     try {
-                        mFileTransferBuffer = readFileContent(currentUri);
+                        mFileTransferBuffer = readFileContent(m_picked_file_uri);
                         mBytesTotal = mFileTransferBuffer.length;
                         mDataBuffer = new byte[mBytesTotal];
                         mTextViewFileLabel.setText("Incoming file: " + String.valueOf(mBytesTotal) + " bytes.");
                         mBytesTransfered = 0;
                         if(!mMtuRequested){
-                            mService.requestMtu(247);
+                            mService.requestMtu(ImageTransferService.targetMtu);
                             writeToLog("Requesting 247 byte MTU from app", AppLogFontType.APP_NORMAL);
                             mMtuRequested = true;
                             mTextViewMtu.setText("247 bytes");
