@@ -41,7 +41,6 @@ import android.content.ServiceConnection;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.media.Image;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -524,7 +523,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             });
         }
         //*********************//
-        if (action.equals(ImageTransferService.DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER)){
+        if (action.equals(ImageTransferService.DEVICE_DOES_NOT_SUPPORT_FILE_TRANSFER)){
             //showMessage("Device doesn't support UART. Disconnecting");
             writeToLog("APP: Invalid BLE service, disconnecting!",  AppLogFontType.APP_ERROR);
             mService.disconnect();
@@ -568,7 +567,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         intentFilter.addAction(ImageTransferService.ACTION_GATT_TRANSFER_FINISHED);
         intentFilter.addAction(ImageTransferService.ACTION_IMG_INFO_AVAILABLE);
         intentFilter.addAction(ImageTransferService.ACTION_FTS_NOTIFICATION);
-        intentFilter.addAction(ImageTransferService.DEVICE_DOES_NOT_SUPPORT_IMAGE_TRANSFER);
+        intentFilter.addAction(ImageTransferService.DEVICE_DOES_NOT_SUPPORT_FILE_TRANSFER);
         return intentFilter;
     }
     @Override
