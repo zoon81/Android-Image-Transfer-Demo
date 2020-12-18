@@ -18,7 +18,6 @@ import android.support.v4.content.LocalBroadcastManager;
 import android.util.Log;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -54,8 +53,6 @@ public class ImageTransferService extends Service {
             "com.nordicsemi.ImageTransferDemo.ACTION_GATT_SERVICES_DISCOVERED";
     public final static String ACTION_DATA_AVAILABLE =
             "com.nordicsemi.ImageTransferDemo.ACTION_DATA_AVAILABLE";
-    public final static String ACTION_DATA_WRITTEN =
-            "com.nordicsemi.ImageTransferDemo.ACTION_GATT_TRANSFER_FINISHED";
     public final static String ACTION_CMD_INFO_AVAILABLE =
             "com.nordicsemi.ImageTransferDemo.ACTION_IMG_INFO_AVAILABLE";
     public final static String ACTION_FTS_NOTIFICATION =
@@ -74,7 +71,6 @@ public class ImageTransferService extends Service {
     public static final UUID TX_CHAR_UUID       = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca3e");
     public static final UUID CMD_INFO_CHAR_UUID = UUID.fromString("6e400004-b5a3-f393-e0a9-e50e24dcca3e");
     public static final UUID INCOMING_FILE_CHAR_UUID = UUID.fromString("6e400005-b5a3-f393-e0a9-e50e24dcca3e");
-    public static final UUID NOTIFICATION_CHAR_UUID = UUID.fromString("6e400006-b5a3-f393-e0a9-e50e24dcca3e");
 
     public static final int targetMtu = 243;
     public static final int smallestSupportedMtu = 123;
@@ -178,7 +174,7 @@ public class ImageTransferService extends Service {
 
         @Override
         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
-            Log.w(TAG, "MTU changed: " + String.valueOf(mtu));
+            Log.w(TAG, "MTU changed: " + mtu);
             current_mtu_size = mtu;
         }
     };
@@ -198,9 +194,8 @@ public class ImageTransferService extends Service {
             intent.putExtra(EXTRA_DATA, characteristic.getValue());
         } else if (INCOMING_FILE_CHAR_UUID.equals(characteristic.getUuid())){
             intent.putExtra(EXTRA_DATA, characteristic.getValue());
-        } else {
-
         }
+
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
     }
 
@@ -247,7 +242,7 @@ public class ImageTransferService extends Service {
             Log.e(TAG, "Unable to obtain a BluetoothAdapter.");
             return false;
         }
-        sendQueue = new ConcurrentLinkedQueue<byte[]>();
+        sendQueue = new ConcurrentLinkedQueue<>();
         return true;
     }
 
@@ -268,7 +263,7 @@ public class ImageTransferService extends Service {
         }
 
         // Previously connected device.  Try to reconnect.
-        if (mBluetoothDeviceAddress != null && address.equals(mBluetoothDeviceAddress)
+        if (address.equals(mBluetoothDeviceAddress)
                 && mBluetoothGatt != null) {
             Log.d(TAG, "Trying to use an existing mBluetoothGatt for connection.");
             if (mBluetoothGatt.connect()) {
@@ -331,21 +326,6 @@ public class ImageTransferService extends Service {
         mBluetoothDeviceAddress = null;
         mBluetoothGatt.close();
         mBluetoothGatt = null;
-    }
-
-    /**
-     * Request a read on a given {@code BluetoothGattCharacteristic}. The read result is reported
-     * asynchronously through the {@code BluetoothGattCallback#onCharacteristicRead(android.bluetooth.BluetoothGatt, android.bluetooth.BluetoothGattCharacteristic, int)}
-     * callback.
-     *
-     * @param characteristic The characteristic to read from.
-     */
-    public void readCharacteristic(BluetoothGattCharacteristic characteristic) {
-        if (mBluetoothAdapter == null || mBluetoothGatt == null) {
-            Log.w(TAG, "BluetoothAdapter not initialized");
-            return;
-        }
-        mBluetoothGatt.readCharacteristic(characteristic);
     }
 
     public void enableTXNotification() {
@@ -416,12 +396,12 @@ public class ImageTransferService extends Service {
         }
     }
 
-    public boolean fts_start_transmit(){
+    public void fts_start_transmit(){
         if( isWriting ){
-            return false;
+            return;
         }
         bulk_data_written = 0;
-        return _send();
+        _send();
     }
 
     private boolean _send() {
@@ -472,7 +452,7 @@ public class ImageTransferService extends Service {
         else {
             pckData = new byte[1 + data.length];
             pckData[0] = (byte)command;
-            for(int i = 0; i < data.length; i++) pckData[i + 1] = data[i];
+            System.arraycopy(data, 0, pckData, 1, data.length);
         }
 
         writeRXCharacteristic(pckData);
@@ -480,16 +460,5 @@ public class ImageTransferService extends Service {
 
     private void showMessage(String msg) {
         Log.e(TAG, msg);
-    }
-    /**
-     * Retrieves a list of supported GATT services on the connected device. This should be
-     * invoked only after {@code BluetoothGatt#discoverServices()} completes successfully.
-     *
-     * @return A {@code List} of supported services.
-     */
-    public List<BluetoothGattService> getSupportedGattServices() {
-        if (mBluetoothGatt == null) return null;
-
-        return mBluetoothGatt.getServices();
     }
 }

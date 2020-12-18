@@ -28,7 +28,6 @@
     <string name="connected">Connected</string>
     <string name="disconnected">Not connected</string>
     <string name="ready">Ready</string>
-    <string name="disconnect">Disconnect</string>
     <string name="connect">connect</string>
     <string name="unpair">unpair</string>
     <string name="pair">pair</string>
@@ -65,6 +64,8 @@
     <string name="cancel">Cancel</string>
     <string name="settings_text_pwm_min_base">PWM min value</string>
     <string name="settings_text_pwm_max_base">PWM max value</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="connect_bt_text">Connect</string>
 
     <string-array name="spinner_resolution">
         <item>160x120</item>

@@ -19,9 +19,9 @@ package com.nordicsemi.ImageTransferDemo;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.text.DecimalFormat;
 import java.util.Arrays;
@@ -29,6 +29,7 @@ import java.util.Date;
 import java.util.zip.GZIPOutputStream;
 
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.ProgressDialog;
 import android.bluetooth.BluetoothAdapter;
@@ -67,23 +68,23 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     private static final int UART_PROFILE_CONNECTED = 20;
     private static final int UART_PROFILE_DISCONNECTED = 21;
 
-    public enum AppLogFontType {APP_NORMAL, APP_ERROR, PEER_NORMAL, PEER_ERROR};
+    public enum AppLogFontType {APP_NORMAL, APP_ERROR, PEER_NORMAL, PEER_ERROR}
+
     private String mLogMessage = "";
 
     private TextView mTextViewLog, mTextViewFileLabel, mTextViewPictureStatus, mTextViewPictureFpsStatus, mTextViewConInt, mTextViewMtu;
-    private Button mBtnDownload, mBtnUpload, mBtnChoseFile;
+    private Button mBtnDownload;
+    private Button mBtnUpload;
     private ProgressBar mProgressBarFileStatus;
     private ImageView mMainImage;
     private Spinner mSpinnerResolution, mSpinnerPhy;
 
     private int mState = UART_PROFILE_DISCONNECTED;
-    private int mByteToSend = 0;
     private ImageTransferService mService = null;
     private BluetoothDevice mDevice = null;
     private BluetoothAdapter mBtAdapter = null;
     private Button btnConnectDisconnect;
     private boolean mMtuRequested;
-    private byte []mUartData = new byte[6];
     private long mStartTimeImageTransfer;
     private byte[] mFileTransferBuffer;
 
@@ -98,15 +99,17 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
 
     private ProgressDialog mConnectionProgDialog;
 
-    public enum AppRunMode {Disconnected, Connected, ConnectedDuringSingleTransfer, ConnectedDuringStream};
-    public enum BleCommand {NoCommand, StartSingleCapture, StartStreaming, StopStreaming, ChangeResolution, ChangePhy, GetBleParams, SetIncommingFileParams};
+    public enum AppRunMode {Disconnected, Connected, ConnectedDuringSingleTransfer, ConnectedDuringStream}
+    // TODO There are some unused commands, cleanUp required
+    public enum BleCommand {NoCommand, StartSingleCapture, StartStreaming, StopStreaming, ChangeResolution, ChangePhy, GetBleParams, SetIncomingFileParams}
 
     Handler guiUpdateHandler = new Handler();
     Runnable guiUpdateRunnable = new Runnable(){
+        @SuppressLint("DefaultLocale")
         @Override
         public void run(){
             if(mTextViewFileLabel != null) {
-                mTextViewFileLabel.setText("Incoming: " + String.valueOf(mBytesTransfered) + "/" + String.valueOf(mBytesTotal));
+                mTextViewFileLabel.setText(String.format("Incoming: %d/%d", mBytesTransfered, mBytesTotal));
                 if(mBytesTotal > 0) {
                     mProgressBarFileStatus.setProgress(mBytesTransfered * 100 / mBytesTotal);
                 }
@@ -137,7 +140,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         mBtnDownload = (Button)findViewById(R.id.buttonTakePicture);
         mBtnUpload = (Button)findViewById(R.id.buttonUpload);
         mBtnUpload.setEnabled(false);
-        mBtnChoseFile = (Button)findViewById(R.id.button_chosefile);
+        Button mBtnChoseFile = (Button) findViewById(R.id.button_chosefile);
         mMainImage = (ImageView)findViewById(R.id.imageTransfered);
         mSpinnerResolution = (Spinner)findViewById(R.id.spinnerResolution);
         mSpinnerResolution.setSelection(1);
@@ -146,7 +149,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         mConnectionProgDialog.setTitle("Connecting...");
         mConnectionProgDialog.setCancelable(false);
         service_init();
-        for(int i = 0; i < 6; i++) mUartData[i] = 0;
 
         // Handler Disconnect & Connect button
         btnConnectDisconnect.setOnClickListener(new View.OnClickListener() {
@@ -183,22 +185,12 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                     // 32byte Filename, 4byte files_size, 1byte control
                     String path = m_picked_file_uri.getPath();
                     String filename = path.substring(path.lastIndexOf("/")+1);
-                    String file;
-                    if (filename.indexOf(".") > 0) {
-                        file = filename.substring(0, filename.lastIndexOf("."));
-                    } else {
-                        file =  filename;
-                    }
 
                     byte[] incomingFileParams = new byte[38];
-                    byte[] incomingFileName = new byte[32];
+                    byte[] incomingFileName;
                     byte[] incomingFileSize;
                     byte[] incomingFileOperation = new byte[1];
-                    try {
-                        incomingFileName = filename.getBytes("UTF-8");
-                    } catch (UnsupportedEncodingException e) {
-                        e.printStackTrace();
-                    }
+                    incomingFileName = filename.getBytes(StandardCharsets.UTF_8);
 
                     incomingFileSize = ByteBuffer.allocate(4).putInt(mFileTransferBuffer.length).array();
                     incomingFileOperation[0] = 0x00;
@@ -206,7 +198,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                     System.arraycopy(incomingFileSize, 0, incomingFileParams, 32, incomingFileSize.length);
                     System.arraycopy(incomingFileOperation, 0, incomingFileParams, 37, incomingFileOperation.length);
                     incomingFileParams[37] = (byte) 0x00;
-                    mService.sendCommand(BleCommand.SetIncommingFileParams.ordinal(), incomingFileParams);
+                    mService.sendCommand(BleCommand.SetIncomingFileParams.ordinal(), incomingFileParams);
                     mService.writeIncomingFileCharacteristic(mFileTransferBuffer);
                     mStartTimeImageTransfer = System.currentTimeMillis();
                 }
@@ -263,7 +255,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
 
 
     //UART service connected/disconnected
-    private ServiceConnection mServiceConnection = new ServiceConnection() {
+    private final ServiceConnection mServiceConnection = new ServiceConnection() {
         public void onServiceConnected(ComponentName className, IBinder rawBinder) {
             mService = ((ImageTransferService.LocalBinder) rawBinder).getService();
             Log.d(TAG, "onServiceConnected mService= " + mService);
@@ -285,7 +277,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         {
             case Connected:
                 mBtnDownload.setEnabled(true);
-                btnConnectDisconnect.setText("Disconnect");
+                btnConnectDisconnect.setText(R.string.disconnect);
                 mSpinnerResolution.setEnabled(true);
                 mSpinnerPhy.setEnabled(true);
                 break;
@@ -293,7 +285,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             case Disconnected:
                 mBtnDownload.setEnabled(false);
                 mBtnUpload.setEnabled(false);
-                btnConnectDisconnect.setText("Connect");
+                btnConnectDisconnect.setText(R.string.connect_bt_text);
                 mTextViewPictureStatus.setVisibility(View.INVISIBLE);
                 mTextViewPictureFpsStatus.setVisibility(View.INVISIBLE);
                 mSpinnerResolution.setEnabled(false);
@@ -341,8 +333,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     private final BroadcastReceiver UARTStatusChangeReceiver = new BroadcastReceiver() {
         public void onReceive(Context context, Intent intent) {
         String action = intent.getAction();
-
-        final Intent mIntent = intent;
         //*********************//
         if (action.equals(ImageTransferService.ACTION_GATT_CONNECTED)) {
             runOnUiThread(new Runnable() {
@@ -361,7 +351,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                 public void run() {
                     setGuiByAppMode(AppRunMode.Disconnected);
                     mState = UART_PROFILE_DISCONNECTED;
-                    mUartData[0] = mUartData[1] = mUartData[2] = mUartData[3] = mUartData[4] = mUartData[5] = 0;
                     mService.close();
                     mTextViewMtu.setText("-");
                     mTextViewConInt.setText("-");
@@ -384,11 +373,12 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
 
             final byte[] txValue = intent.getByteArrayExtra(ImageTransferService.EXTRA_DATA);
             runOnUiThread(new Runnable() {
+            @SuppressLint("SetTextI18n")
             public void run() {
                 try {
                     System.arraycopy(txValue, 0, mDataBuffer, mBytesTransfered, txValue.length);
                     if(mBytesTransfered == 0){
-                        Log.w(TAG, "First packet received: " + String.valueOf(txValue.length) + " bytes");
+                        Log.w(TAG, "First packet received: " + txValue.length + " bytes");
                     }
                     mBytesTransfered += txValue.length;
                     if(mBytesTransfered >= mBytesTotal) {
@@ -399,7 +389,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                         String elapsedSecondsString = df.format(elapsedSeconds);
                         String kbpsString = df.format((float)mDataBuffer.length / elapsedSeconds * 8.0f / 1000.0f);
                         //writeToLog("Completed in " + elapsedSecondsString + " seconds. " + kbpsString + " kbps", AppLogFontType.APP_NORMAL);
-                        mTextViewPictureStatus.setText(String.valueOf(mDataBuffer.length / 1024)
+                        mTextViewPictureStatus.setText(mDataBuffer.length / 1024
                                 + "kB - " + elapsedSecondsString + " seconds - " + kbpsString + " kbps");
                         mTextViewPictureStatus.setVisibility(View.VISIBLE);
                         mTextViewPictureFpsStatus.setText(df.format(1.0f / elapsedSeconds)  + " FPS");
@@ -438,6 +428,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         if (action.equals(ImageTransferService.ACTION_CMD_INFO_AVAILABLE)) {
             final byte[] txValue = intent.getByteArrayExtra(ImageTransferService.EXTRA_DATA);
             runOnUiThread(new Runnable() {
+                @SuppressLint("SetTextI18n")
                 public void run() {
                     try {
                         switch(txValue[0]) {
@@ -448,7 +439,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                 int fileSize = byteBuffer.getInt();
                                 mBytesTotal = fileSize;
                                 mDataBuffer = new byte[fileSize];
-                                mTextViewFileLabel.setText("Incoming file: " + String.valueOf(fileSize) + " bytes.");
+                                mTextViewFileLabel.setText("Incoming file: " + fileSize + " bytes.");
                                 mBytesTransfered = 0;
                                 mStartTimeImageTransfer = System.currentTimeMillis();
                                 break;
@@ -457,7 +448,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                 ByteBuffer mtuBB = ByteBuffer.wrap(Arrays.copyOfRange(txValue, 1, 3));
                                 mtuBB.order(ByteOrder.LITTLE_ENDIAN);
                                 short mtu = mtuBB.getShort();
-                                mTextViewMtu.setText(String.valueOf(mtu) + " bytes");
+                                mTextViewMtu.setText(mtu + " bytes");
                                 if(!mMtuRequested && mtu < 64){
                                     mService.requestMtu(ImageTransferService.targetMtu);
                                     writeToLog("Requesting 247 byte MTU from app", AppLogFontType.APP_NORMAL);
@@ -466,9 +457,9 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                 ByteBuffer ciBB = ByteBuffer.wrap(Arrays.copyOfRange(txValue, 3, 5));
                                 ciBB.order(ByteOrder.LITTLE_ENDIAN);
                                 short conInterval = ciBB.getShort();
-                                mTextViewConInt.setText(String.valueOf((float)conInterval * 1.25f) + "ms");
+                                mTextViewConInt.setText((float)conInterval * 1.25f + "ms");
                                 short txPhy = txValue[5];
-                                short rxPhy = txValue[6];
+                                // short rxPhy = txValue[6];
                                 if(txPhy == 0x0001 && mSpinnerPhy.getSelectedItemPosition() == 1) {
                                     mSpinnerPhy.setSelection(0);
                                     writeToLog("2Mbps not supported!", AppLogFontType.APP_ERROR);
@@ -546,12 +537,12 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     public void onDestroy() {
     	 super.onDestroy();
         Log.d(TAG, "onDestroy()");
-        
+
         try {
         	LocalBroadcastManager.getInstance(this).unregisterReceiver(UARTStatusChangeReceiver);
         } catch (Exception ignore) {
             Log.e(TAG, ignore.toString());
-        } 
+        }
         unbindService(mServiceConnection);
         mService.stopSelf();
         mService= null;
@@ -593,6 +584,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         super.onConfigurationChanged(newConfig);
     }
 
+    @SuppressLint("DefaultLocale")
     @Override
     public void onActivityResult(int requestCode, int resultCode, Intent data) {
         switch (requestCode) {
@@ -630,7 +622,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                         mFileTransferBuffer = readFileContent(m_picked_file_uri);
                         mBytesTotal = mFileTransferBuffer.length;
                         mDataBuffer = new byte[mBytesTotal];
-                        mTextViewFileLabel.setText("Incoming file: " + String.valueOf(mBytesTotal) + " bytes.");
+                        mTextViewFileLabel.setText(String.format("Incoming file: %d bytes.", mBytesTotal));
                         mBytesTransfered = 0;
                         if(!mMtuRequested){
                             mService.requestMtu(ImageTransferService.targetMtu);
