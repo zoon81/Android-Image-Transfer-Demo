@@ -16,6 +16,7 @@
 
 package com.nordicsemi.ImageTransferDemo;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UnsupportedEncodingException;
@@ -25,6 +26,7 @@ import java.text.DateFormat;
 import java.text.DecimalFormat;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.zip.GZIPOutputStream;
 
 
 import android.app.Activity;
@@ -61,17 +63,10 @@ import android.widget.Toast;
 public class MainActivity extends Activity implements RadioGroup.OnCheckedChangeListener {
     private static final int REQUEST_SELECT_DEVICE = 1;
     private static final int REQUEST_ENABLE_BT = 2;
-    private static final int UART_PROFILE_READY = 10;
-    public static final String TAG = "image_transfer_main";
+    public static final String TAG = "file_transfer_main";
     private static final int UART_PROFILE_CONNECTED = 20;
     private static final int UART_PROFILE_DISCONNECTED = 21;
-    private static final int STATE_OFF = 10;
-    private static final int SETTINGS_ACTIVITY = 100;
 
-    private static final String FONT_LABEL_APP_NORMAL = "<font color='#EE0000'>";
-    private static final String FONT_LABEL_APP_ERROR = "<font color='#EE0000'>";
-    private static final String FONT_LABEL_PEER_NORMAL = "<font color='#EE0000'>";
-    private static final String FONT_LABEL_PEER_ERROR = "<font color='#EE0000'>";
     public enum AppLogFontType {APP_NORMAL, APP_ERROR, PEER_NORMAL, PEER_ERROR};
     private String mLogMessage = "";
 
@@ -214,19 +209,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                     mService.sendCommand(BleCommand.SetIncommingFileParams.ordinal(), incomingFileParams);
                     mService.writeIncomingFileCharacteristic(mFileTransferBuffer);
                     mStartTimeImageTransfer = System.currentTimeMillis();
-                }
-            }
-        });
-
-        mBtnUpload.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if(mService != null){
-                    if(!mUploadActive) {
-                        mUploadActive = true;
-                        mService.writeIncomingFileCharacteristic(mFileTransferBuffer);
-                        mStartTimeImageTransfer = System.currentTimeMillis();
-                    }
                 }
             }
         });
@@ -453,7 +435,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             });
         }
         //*********************//
-        if (action.equals(ImageTransferService.ACTION_IMG_INFO_AVAILABLE)) {
+        if (action.equals(ImageTransferService.ACTION_CMD_INFO_AVAILABLE)) {
             final byte[] txValue = intent.getByteArrayExtra(ImageTransferService.EXTRA_DATA);
             runOnUiThread(new Runnable() {
                 public void run() {
@@ -534,21 +516,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             setGuiByAppMode(AppRunMode.Connected);
         }
 
-        if(action.equals(ImageTransferService.ACTION_FTS_NOTIFICATION)){
-            final byte[] txValue = intent.getByteArrayExtra(ImageTransferService.EXTRA_DATA);
-            switch(txValue[0]) {
-                case 1:
-                    // Ready to receive
-                    mService.writeIncomingFileCharacteristic(mFileTransferBuffer);
-                    mStartTimeImageTransfer = System.currentTimeMillis();
-                    mService.fts_start_transmit();
-                    break;
-                case 2:
-                    break;
-                default:
-                    break;
-            }
-        }
         }
     };
 
@@ -565,7 +532,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         intentFilter.addAction(ImageTransferService.ACTION_GATT_SERVICES_DISCOVERED);
         intentFilter.addAction(ImageTransferService.ACTION_DATA_AVAILABLE);
         intentFilter.addAction(ImageTransferService.ACTION_GATT_TRANSFER_FINISHED);
-        intentFilter.addAction(ImageTransferService.ACTION_IMG_INFO_AVAILABLE);
+        intentFilter.addAction(ImageTransferService.ACTION_CMD_INFO_AVAILABLE);
         intentFilter.addAction(ImageTransferService.ACTION_FTS_NOTIFICATION);
         intentFilter.addAction(ImageTransferService.DEVICE_DOES_NOT_SUPPORT_FILE_TRANSFER);
         return intentFilter;
@@ -685,11 +652,20 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     }
 
     private byte[] readFileContent(Uri uri) throws IOException {
+        // Read file data
         InputStream inputStream = getContentResolver().openInputStream(uri);
         byte[] mBuffer = new byte[inputStream.available()];
         inputStream.read(mBuffer, 0, inputStream.available());
         inputStream.close();
-        return mBuffer;
+
+        // Compress file data
+        ByteArrayOutputStream os = new ByteArrayOutputStream(mBuffer.length);
+        GZIPOutputStream gos = new GZIPOutputStream(os);
+        gos.write(mBuffer);
+        gos.close();
+        byte[] mCompressedByteArray = os.toByteArray();
+        os.close();
+        return mCompressedByteArray;
     }
 
     @Override

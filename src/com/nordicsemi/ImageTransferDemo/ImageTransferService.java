@@ -56,7 +56,7 @@ public class ImageTransferService extends Service {
             "com.nordicsemi.ImageTransferDemo.ACTION_DATA_AVAILABLE";
     public final static String ACTION_DATA_WRITTEN =
             "com.nordicsemi.ImageTransferDemo.ACTION_GATT_TRANSFER_FINISHED";
-    public final static String ACTION_IMG_INFO_AVAILABLE =
+    public final static String ACTION_CMD_INFO_AVAILABLE =
             "com.nordicsemi.ImageTransferDemo.ACTION_IMG_INFO_AVAILABLE";
     public final static String ACTION_FTS_NOTIFICATION =
             "com.nordicsemi.ImageTransferDemo.ACTION_IMG_INFO_AVAILABLE";
@@ -132,10 +132,7 @@ public class ImageTransferService extends Service {
         public void onCharacteristicChanged(BluetoothGatt gatt,
                                             BluetoothGattCharacteristic characteristic) {
             if(CMD_INFO_CHAR_UUID.equals(characteristic.getUuid())) {
-                broadcastUpdate(ACTION_IMG_INFO_AVAILABLE, characteristic);
-            }
-            if(NOTIFICATION_CHAR_UUID.equals(characteristic.getUuid())){
-                broadcastUpdate(ACTION_FTS_NOTIFICATION, characteristic);
+                broadcastUpdate(ACTION_CMD_INFO_AVAILABLE, characteristic);
             }
             else {
                 broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic);
@@ -195,18 +192,11 @@ public class ImageTransferService extends Service {
                                  final BluetoothGattCharacteristic characteristic) {
         final Intent intent = new Intent(action);
 
-        // This is special handling for the Heart Rate Measurement profile.  Data parsing is
-        // carried out as per profile specifications:
-        // http://developer.bluetooth.org/gatt/characteristics/Pages/CharacteristicViewer.aspx?u=org.bluetooth.characteristic.heart_rate_measurement.xml
         if (TX_CHAR_UUID.equals(characteristic.getUuid())) {
-
-            // Log.d(TAG, String.format("Received TX: %d",characteristic.getValue() ));
             intent.putExtra(EXTRA_DATA, characteristic.getValue());
         } else if(CMD_INFO_CHAR_UUID.equals(characteristic.getUuid())) {
             intent.putExtra(EXTRA_DATA, characteristic.getValue());
         } else if (INCOMING_FILE_CHAR_UUID.equals(characteristic.getUuid())){
-            intent.putExtra(EXTRA_DATA, characteristic.getValue());
-        } else if (NOTIFICATION_CHAR_UUID.equals(characteristic.getUuid())){
             intent.putExtra(EXTRA_DATA, characteristic.getValue());
         } else {
 
@@ -358,35 +348,6 @@ public class ImageTransferService extends Service {
         mBluetoothGatt.readCharacteristic(characteristic);
     }
 
-    /**
-     * Enables or disables notification on a give characteristic.
-     *
-     * @param characteristic Characteristic to act on.
-     * @param enabled If true, enable notification.  False otherwise.
-     */
-    /*
-    public void setCharacteristicNotification(BluetoothGattCharacteristic characteristic,
-                                              boolean enabled) {
-        if (mBluetoothAdapter == null || mBluetoothGatt == null) {
-            Log.w(TAG, "BluetoothAdapter not initialized");
-            return;
-        }
-        mBluetoothGatt.setCharacteristicNotification(characteristic, enabled);
-
-
-        if (UUID_HEART_RATE_MEASUREMENT.equals(characteristic.getUuid())) {
-            BluetoothGattDescriptor descriptor = characteristic.getDescriptor(
-                    UUID.fromString(SampleGattAttributes.CLIENT_CHARACTERISTIC_CONFIG));
-            descriptor.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
-            mBluetoothGatt.writeDescriptor(descriptor);
-        }
-    }*/
-
-    /**
-     * Enable TXNotification
-     *
-     * @return
-     */
     public void enableTXNotification() {
         Log.w(TAG, "enable TX not.");
         BluetoothGattService ImageTransferService = mBluetoothGatt.getService(FILE_TRANSFER_SERVICE_UUID);
