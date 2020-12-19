@@ -74,7 +74,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
 
     private TextView mTextViewLog, mTextViewFileLabel, mTextViewPictureStatus, mTextViewPictureFpsStatus, mTextViewConInt, mTextViewMtu;
     private Button mBtnDownload;
-    private Button mBtnUpload;
+    private Button mBtnGZDownload;
     private ProgressBar mProgressBarFileStatus;
     private ImageView mMainImage;
     private Spinner mSpinnerResolution, mSpinnerPhy;
@@ -99,7 +99,10 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
 
     private ProgressDialog mConnectionProgDialog;
 
-    public enum AppRunMode {Disconnected, Connected, ConnectedDuringSingleTransfer, ConnectedDuringStream}
+    private enum AppRunMode {Disconnected, Connected, ConnectedDuringSingleTransfer, ConnectedDuringStream}
+    private enum CmdInfoCharCommands {setIncomingFileParams, setConnectionParams, setOutgoingFileParams}
+    private enum OutgoingFileParams {ReadyToReceive, TransmissionFinished, ReadyToReceiveContinuous, ReceiverBusy}
+
     // TODO There are some unused commands, cleanUp required
     public enum BleCommand {NoCommand, StartSingleCapture, StartStreaming, StopStreaming, ChangeResolution, ChangePhy, GetBleParams, SetIncomingFileParams}
 
@@ -108,10 +111,10 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         @SuppressLint("DefaultLocale")
         @Override
         public void run(){
-            if(mTextViewFileLabel != null) {
-                mTextViewFileLabel.setText(String.format("Incoming: %d/%d", mBytesTransfered, mBytesTotal));
-                if(mBytesTotal > 0) {
-                    mProgressBarFileStatus.setProgress(mBytesTransfered * 100 / mBytesTotal);
+            if(mTextViewFileLabel != null && mService != null) {
+                mTextViewFileLabel.setText(String.format("Sending: %d / %d", mService.getTransmitted_bytes(), mService.getTotalTransmissionBytes()));
+                if(mService.getTotalTransmissionBytes() > 0) {
+                    mProgressBarFileStatus.setProgress(mService.getTransmitted_bytes() * 100 / mService.getTotalTransmissionBytes());
                 }
             }
             guiUpdateHandler.postDelayed(this, 50);
@@ -138,8 +141,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         mTextViewMtu = (TextView)findViewById(R.id.textViewMTU);
         mProgressBarFileStatus = (ProgressBar)findViewById(R.id.progressBarFile);
         mBtnDownload = (Button)findViewById(R.id.buttonTakePicture);
-        mBtnUpload = (Button)findViewById(R.id.buttonUpload);
-        mBtnUpload.setEnabled(false);
+        mBtnGZDownload = (Button)findViewById(R.id.buttonGZDownload);
         Button mBtnChoseFile = (Button) findViewById(R.id.button_chosefile);
         mMainImage = (ImageView)findViewById(R.id.imageTransfered);
         mSpinnerResolution = (Spinner)findViewById(R.id.spinnerResolution);
@@ -179,27 +181,17 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             @Override
             public void onClick(View v) {
                 if(mService != null){
-                    // mService.sendCommand(BleCommand.StartSingleCapture.ordinal(), null);
-                    // setGuiByAppMode(AppRunMode.ConnectedDuringSingleTransfer);
+                    mService.fts_sendFile(m_picked_file_uri, false);
+                    mStartTimeImageTransfer = System.currentTimeMillis();
+                }
+            }
+        });
 
-                    // 32byte Filename, 4byte files_size, 1byte control
-                    String path = m_picked_file_uri.getPath();
-                    String filename = path.substring(path.lastIndexOf("/")+1);
-
-                    byte[] incomingFileParams = new byte[38];
-                    byte[] incomingFileName;
-                    byte[] incomingFileSize;
-                    byte[] incomingFileOperation = new byte[1];
-                    incomingFileName = filename.getBytes(StandardCharsets.UTF_8);
-
-                    incomingFileSize = ByteBuffer.allocate(4).putInt(mFileTransferBuffer.length).array();
-                    incomingFileOperation[0] = 0x00;
-                    System.arraycopy(incomingFileName, 0, incomingFileParams, 0, incomingFileName.length);
-                    System.arraycopy(incomingFileSize, 0, incomingFileParams, 32, incomingFileSize.length);
-                    System.arraycopy(incomingFileOperation, 0, incomingFileParams, 37, incomingFileOperation.length);
-                    incomingFileParams[37] = (byte) 0x00;
-                    mService.sendCommand(BleCommand.SetIncomingFileParams.ordinal(), incomingFileParams);
-                    mService.writeIncomingFileCharacteristic(mFileTransferBuffer);
+        mBtnGZDownload.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if(mService != null){
+                    mService.fts_sendFile(m_picked_file_uri, true);
                     mStartTimeImageTransfer = System.currentTimeMillis();
                 }
             }
@@ -277,6 +269,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         {
             case Connected:
                 mBtnDownload.setEnabled(true);
+                mBtnGZDownload.setEnabled(true);
                 btnConnectDisconnect.setText(R.string.disconnect);
                 mSpinnerResolution.setEnabled(true);
                 mSpinnerPhy.setEnabled(true);
@@ -284,7 +277,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
 
             case Disconnected:
                 mBtnDownload.setEnabled(false);
-                mBtnUpload.setEnabled(false);
+                mBtnGZDownload.setEnabled(false);
                 btnConnectDisconnect.setText(R.string.connect_bt_text);
                 mTextViewPictureStatus.setVisibility(View.INVISIBLE);
                 mTextViewPictureFpsStatus.setVisibility(View.INVISIBLE);
@@ -295,12 +288,10 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                 break;
 
             case ConnectedDuringSingleTransfer:
-                mBtnDownload.setEnabled(false);
-                mBtnUpload.setEnabled(false);
-                break;
 
             case ConnectedDuringStream:
                 mBtnDownload.setEnabled(false);
+                mBtnGZDownload.setEnabled(false);
                 break;
         }
     }
@@ -367,72 +358,15 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             mService.sendCommand(BleCommand.GetBleParams.ordinal(), null);
             setGuiByAppMode(AppRunMode.Connected);
         }
-
-        //*********************//
-        if (action.equals(ImageTransferService.ACTION_DATA_AVAILABLE)) {
-
-            final byte[] txValue = intent.getByteArrayExtra(ImageTransferService.EXTRA_DATA);
-            runOnUiThread(new Runnable() {
-            @SuppressLint("SetTextI18n")
-            public void run() {
-                try {
-                    System.arraycopy(txValue, 0, mDataBuffer, mBytesTransfered, txValue.length);
-                    if(mBytesTransfered == 0){
-                        Log.w(TAG, "First packet received: " + txValue.length + " bytes");
-                    }
-                    mBytesTransfered += txValue.length;
-                    if(mBytesTransfered >= mBytesTotal) {
-                        long elapsedTime = System.currentTimeMillis() - mStartTimeImageTransfer;
-                        float elapsedSeconds = (float)elapsedTime / 1000.0f;
-                        DecimalFormat df = new DecimalFormat("0.0");
-                        df.setMaximumFractionDigits(1);
-                        String elapsedSecondsString = df.format(elapsedSeconds);
-                        String kbpsString = df.format((float)mDataBuffer.length / elapsedSeconds * 8.0f / 1000.0f);
-                        //writeToLog("Completed in " + elapsedSecondsString + " seconds. " + kbpsString + " kbps", AppLogFontType.APP_NORMAL);
-                        mTextViewPictureStatus.setText(mDataBuffer.length / 1024
-                                + "kB - " + elapsedSecondsString + " seconds - " + kbpsString + " kbps");
-                        mTextViewPictureStatus.setVisibility(View.VISIBLE);
-                        mTextViewPictureFpsStatus.setText(df.format(1.0f / elapsedSeconds)  + " FPS");
-                        mTextViewPictureFpsStatus.setVisibility(View.VISIBLE);
-                        Bitmap bitmap;
-                        Log.w(TAG, "attempting JPEG decode");
-                        try {
-                            byte[] jpgHeader = new byte[]{-1, -40, -1, -32};
-                            if(Arrays.equals(jpgHeader, Arrays.copyOfRange(mDataBuffer, 0, 4))) {
-                                // New plus version of the Arducam mini 2MP module
-                                bitmap = BitmapFactory.decodeByteArray(mDataBuffer, 0, mDataBuffer.length);
-                                mMainImage.setImageBitmap(bitmap);
-                            }
-                            else if(Arrays.equals(jpgHeader, Arrays.copyOfRange(mDataBuffer, 1, 5))){
-                                // Old version of the Arducam mini 2MP module
-                                bitmap = BitmapFactory.decodeByteArray(mDataBuffer, 1, mDataBuffer.length-1);
-                                mMainImage.setImageBitmap(bitmap);
-                            }
-                            else {
-                                Log.w(TAG, "JPG header missing!! Image data corrupt.");
-                            }
-                        } catch (Exception e) {
-                            Log.w(TAG, "Bitmapfactory fail :(");
-                        }
-                        if(!mUploadActive) {
-                            setGuiByAppMode(AppRunMode.Connected);
-                        }
-                    }
-                } catch (Exception e) {
-                    Log.e(TAG, e.toString());
-                }
-            }
-            });
-        }
-        //*********************//
         if (action.equals(ImageTransferService.ACTION_CMD_INFO_AVAILABLE)) {
             final byte[] txValue = intent.getByteArrayExtra(ImageTransferService.EXTRA_DATA);
             runOnUiThread(new Runnable() {
                 @SuppressLint("SetTextI18n")
                 public void run() {
                     try {
-                        switch(txValue[0]) {
-                            case 1:
+                        CmdInfoCharCommands cmd = CmdInfoCharCommands.values()[txValue[0] - 1];
+                        switch(cmd) {
+                            case setIncomingFileParams:
                                 // Start a new file transfer
                                 ByteBuffer byteBuffer = ByteBuffer.wrap(Arrays.copyOfRange(txValue, 1, 5));
                                 byteBuffer.order(ByteOrder.LITTLE_ENDIAN);
@@ -444,14 +378,14 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                 mStartTimeImageTransfer = System.currentTimeMillis();
                                 break;
 
-                            case 2:
+                            case setConnectionParams:
                                 ByteBuffer mtuBB = ByteBuffer.wrap(Arrays.copyOfRange(txValue, 1, 3));
                                 mtuBB.order(ByteOrder.LITTLE_ENDIAN);
                                 short mtu = mtuBB.getShort();
                                 mTextViewMtu.setText(mtu + " bytes");
                                 if(!mMtuRequested && mtu < 64){
                                     mService.requestMtu(ImageTransferService.targetMtu);
-                                    writeToLog("Requesting 247 byte MTU from app", AppLogFontType.APP_NORMAL);
+                                    writeToLog("Requesting 240 byte MTU from app", AppLogFontType.APP_NORMAL);
                                     mMtuRequested = true;
                                 }
                                 ByteBuffer ciBB = ByteBuffer.wrap(Arrays.copyOfRange(txValue, 3, 5));
@@ -468,21 +402,26 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                     writeToLog("Parameters updated.", AppLogFontType.APP_NORMAL);
                                 }
                                 break;
-                            case 3:
-                                switch(txValue[1]) {
-                                    case 1:
-                                        // Ready to receive signal from NRF52
+                            case setOutgoingFileParams:
+                                OutgoingFileParams ofp_cmd = OutgoingFileParams.values()[txValue[1]];
+                                switch(ofp_cmd) {
+                                    case ReadyToReceive:
                                         mService.fts_start_transmit();
                                         break;
-                                    case 2:
-                                        // Receive finished
+                                    case TransmissionFinished:
                                         long elapsedTime = System.currentTimeMillis() - mStartTimeImageTransfer;
                                         float elapsedSeconds = (float)elapsedTime / 1000.0f;
                                         DecimalFormat df = new DecimalFormat("0.0");
                                         df.setMaximumFractionDigits(1);
                                         String elapsedSecondsString = df.format(elapsedSeconds);
-                                        String kbpsString = df.format((float)mFileTransferBuffer.length / elapsedSeconds * 8.0f / 1000.0f);
+                                        String kbpsString = df.format((float)mService.getTotalTransmissionBytes() / elapsedSeconds * 8.0f / 1000.0f);
                                         writeToLog("Completed in " + elapsedSecondsString + " seconds. " + kbpsString + " kbps", AppLogFontType.APP_NORMAL);
+                                        break;
+                                    case ReadyToReceiveContinuous:
+                                        mService.setContinuousTransmissionReadyState(true);
+                                        break;
+                                    case ReceiverBusy:
+                                        mService.setContinuousTransmissionReadyState(false);
                                         break;
                                     default:
                                         break;
@@ -618,22 +557,12 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                 if (resultCode == Activity.RESULT_OK)
                 {
                    m_picked_file_uri = data.getData();
-                    try {
-                        mFileTransferBuffer = readFileContent(m_picked_file_uri);
-                        mBytesTotal = mFileTransferBuffer.length;
-                        mDataBuffer = new byte[mBytesTotal];
-                        mTextViewFileLabel.setText(String.format("Incoming file: %d bytes.", mBytesTotal));
-                        mBytesTransfered = 0;
-                        if(!mMtuRequested){
-                            mService.requestMtu(ImageTransferService.targetMtu);
-                            writeToLog("Requesting 247 byte MTU from app", AppLogFontType.APP_NORMAL);
-                            mMtuRequested = true;
-                            mTextViewMtu.setText("247 bytes");
-                        }
-                        mBtnUpload.setEnabled(true);
-                    } catch (IOException e) {
-                        // Handle error here
-                    }
+                   if(!mMtuRequested){
+                       mService.requestMtu(ImageTransferService.targetMtu);
+                       writeToLog("Requesting 240 byte MTU from app", AppLogFontType.APP_NORMAL);
+                       mMtuRequested = true;
+                       mTextViewMtu.setText("240 bytes");
+                   }
                 }
                 break;
 

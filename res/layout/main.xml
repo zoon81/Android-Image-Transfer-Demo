@@ -94,11 +94,11 @@
             android:text="Download" />
 
         <Button
-            android:id="@+id/buttonUpload"
+            android:id="@+id/buttonGZDownload"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:layout_weight="1"
-            android:text="Upload" />
+            android:text="Compressed Download" />
 
         <Button
             android:id="@+id/button_chosefile"

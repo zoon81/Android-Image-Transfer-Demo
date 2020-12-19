@@ -12,15 +12,22 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.BluetoothProfile;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Binder;
 import android.os.IBinder;
 import android.support.v4.content.LocalBroadcastManager;
 import android.util.Log;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.zip.GZIPOutputStream;
 
 /**
  * Service for managing connection and data communication with a GATT server hosted on a
@@ -37,8 +44,11 @@ public class ImageTransferService extends Service {
     private volatile boolean isWriting;
     private Queue<byte[]> sendQueue; //To be inited with sendQueue = new ConcurrentLinkedQueue<String>();
     private BluetoothGattCharacteristic FtChar;
-    private int current_mtu_size;
-    private int bulk_data_written;
+    private int current_mtu_size = 20;
+    private int bulk_data_written = 0;
+    private int total_transmission_bytes = 0;
+    private int transmitted_bytes = 0;
+    private boolean isReceiverReady;
 
 
     private static final int STATE_DISCONNECTED = 0;
@@ -65,6 +75,7 @@ public class ImageTransferService extends Service {
             "com.nordicsemi.ImageTransferDemo.ACTION_GATT_TRANSFER_FINISHED";
 
     public static final UUID CCCD = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+    public enum TransmissionMode {Fragmented_mode, Continuous_mode}
 
     public static final UUID FILE_TRANSFER_SERVICE_UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca3e");
     public static final UUID RX_CHAR_UUID       = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca3e");
@@ -76,7 +87,8 @@ public class ImageTransferService extends Service {
     public static final int smallestSupportedMtu = 123;
     private static final  int target_mtu_payload_size = targetMtu - 3;
     private static final  int smallestSupported_mtu_payload_size = smallestSupportedMtu - 3;
-    private static final int BULK_DATA_LEN = 68 * target_mtu_payload_size; // This cache can store up to 68 payloads
+    private static final int BULK_DATA_LEN = 136 * target_mtu_payload_size; // This cache can store up to 68 payloads
+    private TransmissionMode m_transmissionMode;
 
     // Implements callback methods for GATT events that the app cares about.  For example,
     // connection change and services discovered.
@@ -142,7 +154,16 @@ public class ImageTransferService extends Service {
                 Log.d("TAG","onCharacteristicWrite(): Successful");
                 if(isWriting){
                     isWriting = false;
-                    boolean isWriteInProgress = _send();
+                    boolean isWriteInProgress;
+                    transmitted_bytes += current_mtu_size;
+                    if(m_transmissionMode == TransmissionMode.Fragmented_mode){
+                        isWriteInProgress = _send();
+                    } else if(m_transmissionMode == TransmissionMode.Continuous_mode){
+                        isWriteInProgress = _send_cont();
+                    } else {
+                        isWriteInProgress = _send();
+                    }
+
                     if(isWriteInProgress){
                         broadcastUpdate(ACTION_DATA_AVAILABLE, characteristic);
                     } else {
@@ -401,7 +422,46 @@ public class ImageTransferService extends Service {
             return;
         }
         bulk_data_written = 0;
+        m_transmissionMode = TransmissionMode.Fragmented_mode;
         _send();
+    }
+
+    public void fts_sendFile(Uri file_uri, boolean isCompressionRequired){
+        byte[] mBuffer = new byte[0];
+        try {
+            mBuffer = readFileContent(file_uri);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        if(isCompressionRequired){
+            try {
+                mBuffer = compressFileContent(mBuffer);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        total_transmission_bytes = mBuffer.length;
+        transmitted_bytes = 0;
+        writeIncomingFileCharacteristic(mBuffer);
+        // 32byte Filename, 4byte files_size, 1byte control
+        String path = file_uri.getPath();
+        String filename = path.substring(path.lastIndexOf("/")+1);
+
+        byte[] incomingFileParams = new byte[38];
+        byte[] incomingFileName;
+        byte[] incomingFileSize;
+        byte[] incomingFileOperation = new byte[1];
+        incomingFileName = filename.getBytes(StandardCharsets.UTF_8);
+
+        incomingFileSize = ByteBuffer.allocate(4).putInt(mBuffer.length).array();
+        incomingFileOperation[0] = 0x00;
+        System.arraycopy(incomingFileName, 0, incomingFileParams, 0, incomingFileName.length);
+        System.arraycopy(incomingFileSize, 0, incomingFileParams, 32, incomingFileSize.length);
+        System.arraycopy(incomingFileOperation, 0, incomingFileParams, 37, incomingFileOperation.length);
+        incomingFileParams[37] = (byte) 0x00;
+        sendCommand(MainActivity.BleCommand.SetIncomingFileParams.ordinal(), incomingFileParams);
     }
 
     private boolean _send() {
@@ -440,6 +500,59 @@ public class ImageTransferService extends Service {
 
         isWriting = true; // Set the write in progress flag
         bulk_data_written += current_payload_size;
+        FtChar.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
+        return mBluetoothGatt.writeCharacteristic(FtChar);
+
+    }
+
+    public void setTransmissionMode(TransmissionMode mode){
+        m_transmissionMode = mode;
+    }
+
+    public void setContinuousTransmissionReadyState( boolean state ){
+        isReceiverReady = state;
+        m_transmissionMode = TransmissionMode.Continuous_mode;
+        if(isReceiverReady == true){
+            _send_cont();
+        }
+    }
+
+    private boolean _send_cont() {
+        if (sendQueue.isEmpty()) {
+            Log.d("TAG", "_send(): EMPTY QUEUE");
+            return false;
+        }
+
+        if(!isReceiverReady){
+            Log.d("TAG", "_send(): Data transmission paused");
+            isWriting = false;
+            return false;
+        }
+
+        int nof_elements = (current_mtu_size - 3) / (smallestSupported_mtu_payload_size);
+        if( sendQueue.size() < nof_elements){
+            nof_elements = sendQueue.size();
+        }
+
+        int current_payload_size = nof_elements * smallestSupported_mtu_payload_size;
+        // Log.d(TAG, "_send(): Sending: " + current_payload_size + " byte. Pulling " + nof_elements + " number of elements from queue.");
+        byte[] payload = new byte[current_payload_size];
+        byte[] queue_data = new byte[0];
+        for(int i = 0; i < nof_elements; i++){
+            queue_data = sendQueue.poll();
+            System.arraycopy(queue_data, 0, payload, i * smallestSupported_mtu_payload_size,  queue_data.length);
+        }
+        if(sendQueue.size() == 0){
+            // Resize payload array, because most probably, we do not have enough data to fill it
+            byte[] last_payload = new byte[nof_elements * smallestSupported_mtu_payload_size - (smallestSupported_mtu_payload_size - queue_data.length)];
+            System.arraycopy( payload, 0, last_payload, 0, last_payload.length);
+            FtChar.setValue(last_payload);
+        } else {
+            FtChar.setValue(payload);
+        }
+
+        isWriting = true; // Set the write in progress flag
+        FtChar.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE);
         return mBluetoothGatt.writeCharacteristic(FtChar);
     }
 
@@ -458,7 +571,30 @@ public class ImageTransferService extends Service {
         writeRXCharacteristic(pckData);
     }
 
+    private byte[] readFileContent(Uri uri) throws IOException {
+        // Read file data
+        InputStream inputStream = getContentResolver().openInputStream(uri);
+        byte[] mBuffer = new byte[inputStream.available()];
+        inputStream.read(mBuffer, 0, inputStream.available());
+        inputStream.close();
+        return mBuffer;
+    }
+
+    private byte[] compressFileContent(byte[] buffer) throws IOException {
+        ByteArrayOutputStream os = new ByteArrayOutputStream(buffer.length);
+        GZIPOutputStream gos = new GZIPOutputStream(os);
+        gos.write(buffer);
+        gos.close();
+        byte[] mCompressedByteArray = os.toByteArray();
+        os.close();
+        return mCompressedByteArray;
+    }
+
     private void showMessage(String msg) {
         Log.e(TAG, msg);
     }
-}
+
+    public int getTotalTransmissionBytes(){ return total_transmission_bytes; }
+    public int getTransmitted_bytes(){ return transmitted_bytes; }
+
+    }
