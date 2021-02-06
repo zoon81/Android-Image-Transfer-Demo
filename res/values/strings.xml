@@ -66,6 +66,7 @@
     <string name="settings_text_pwm_max_base">PWM max value</string>
     <string name="disconnect">Disconnect</string>
     <string name="connect_bt_text">Connect</string>
+    <string name="FramePeriodOnDev">Frame period in millisecond: %dms</string>
 
     <string-array name="spinner_resolution">
         <item>160x120</item>

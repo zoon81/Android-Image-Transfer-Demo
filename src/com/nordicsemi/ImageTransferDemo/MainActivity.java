@@ -72,12 +72,15 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
 
     private String mLogMessage = "";
 
-    private TextView mTextViewLog, mTextViewFileLabel, mTextViewPictureStatus, mTextViewPictureFpsStatus, mTextViewConInt, mTextViewMtu;
+    private TextView mTextViewLog, mTextViewFileLabel, mTextViewConInt, mTextViewMtu;
     private Button mBtnDownload;
     private Button mBtnGZDownload;
+    private Button mBtnUpdateFps;
+    private Button mBtnStartStopAnim;
     private ProgressBar mProgressBarFileStatus;
-    private ImageView mMainImage;
-    private Spinner mSpinnerResolution, mSpinnerPhy;
+    private Spinner  mSpinnerPhy;
+    private TextView mTextViewFrameTime;
+    private TextView mTextView_FrameTimeOnDevice;
 
     private int mState = UART_PROFILE_DISCONNECTED;
     private ImageTransferService mService = null;
@@ -85,17 +88,12 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     private BluetoothAdapter mBtAdapter = null;
     private Button btnConnectDisconnect;
     private boolean mMtuRequested;
+    private boolean isAnimationRunning;
     private long mStartTimeImageTransfer;
-    private byte[] mFileTransferBuffer;
 
     private Uri m_picked_file_uri;
 
     private static final int OPEN_REQUEST_CODE = 41;
-
-    // File transfer variables
-    private int mBytesTransfered = 0, mBytesTotal = 0;
-    private byte []mDataBuffer;
-    private boolean mUploadActive = false;
 
     private ProgressDialog mConnectionProgDialog;
 
@@ -104,7 +102,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
     private enum OutgoingFileParams {ReadyToReceive, TransmissionFinished, ReadyToReceiveContinuous, ReceiverBusy}
 
     // TODO There are some unused commands, cleanUp required
-    public enum BleCommand {NoCommand, StartSingleCapture, StartStreaming, StopStreaming, ChangeResolution, ChangePhy, GetBleParams, SetIncomingFileParams}
+    public enum BleCommand {NoCommand, StartSingleCapture, StartStreaming, StopStreaming, ChangeResolution, ChangePhy, GetBleParams, SetIncomingFileParams, ChangeFrameTime, StartStopAnim}
 
     Handler guiUpdateHandler = new Handler();
     Runnable guiUpdateRunnable = new Runnable(){
@@ -135,21 +133,22 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         btnConnectDisconnect    = (Button) findViewById(R.id.btn_select);
         mTextViewLog = (TextView)findViewById(R.id.textViewLog);
         mTextViewFileLabel = (TextView)findViewById(R.id.textViewFileLabel);
-        mTextViewPictureStatus = (TextView)findViewById(R.id.textViewImageStatus);
-        mTextViewPictureFpsStatus = (TextView)findViewById(R.id.textViewImageFpsStatus);
         mTextViewConInt = (TextView)findViewById(R.id.textViewCI);
         mTextViewMtu = (TextView)findViewById(R.id.textViewMTU);
         mProgressBarFileStatus = (ProgressBar)findViewById(R.id.progressBarFile);
         mBtnDownload = (Button)findViewById(R.id.buttonTakePicture);
         mBtnGZDownload = (Button)findViewById(R.id.buttonGZDownload);
+        mBtnUpdateFps = (Button)findViewById(R.id.button_update_fps);
+        mBtnStartStopAnim = (Button) findViewById(R.id.button_anim_start_stop);
         Button mBtnChoseFile = (Button) findViewById(R.id.button_chosefile);
-        mMainImage = (ImageView)findViewById(R.id.imageTransfered);
-        mSpinnerResolution = (Spinner)findViewById(R.id.spinnerResolution);
-        mSpinnerResolution.setSelection(1);
+
         mSpinnerPhy = (Spinner)findViewById(R.id.spinnerPhy);
+        mTextViewFrameTime = (TextView) findViewById(R.id.editTextNumber_fps_value);
+        mTextView_FrameTimeOnDevice = (TextView) findViewById(R.id.textView_frame_time_on_device);
         mConnectionProgDialog = new ProgressDialog(this);
         mConnectionProgDialog.setTitle("Connecting...");
         mConnectionProgDialog.setCancelable(false);
+        isAnimationRunning = false;
         service_init();
 
         // Handler Disconnect & Connect button
@@ -207,22 +206,39 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
             }
         });
 
+        mBtnUpdateFps.setOnClickListener(new View.OnClickListener(){
 
-
-        mSpinnerResolution.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
-            public void onItemSelected(AdapterView<?> parentView, View selectedItemView, int position, long id) {
-                if(mService != null && mService.isConnected()){
-                    byte []cmdData = new byte[1];
-                    cmdData[0] = (byte)position;
-                    mService.sendCommand(BleCommand.ChangeResolution.ordinal(), cmdData);
+            public void onClick(View view) {
+                if(mService != null){
+                    short textview_value = Short.parseShort(mTextViewFrameTime.getEditableText().toString());
+                    updateFrameTimeOnDeviceTextView(textview_value);
+                    byte[] bytes = ByteBuffer.allocate(2).putShort(textview_value).array();
+                    mService.sendCommand(BleCommand.ChangeFrameTime.ordinal(), bytes);
                 }
             }
+        });
+
+        mBtnStartStopAnim.setOnClickListener(new View.OnClickListener(){
 
             @Override
-            public void onNothingSelected(AdapterView<?> parentView) {
+            public void onClick(View view) {
+                if(mService != null){
+                    byte[] anim_status = new byte[1];
+                    if(isAnimationRunning){
+                        anim_status[0] = 0;
+                        mBtnStartStopAnim.setText("Start anim");
+                        isAnimationRunning = false;
+                    } else {
+                        anim_status[0] = 1;
+                        mBtnStartStopAnim.setText("Stop anim");
+                        isAnimationRunning = true;
+                    }
+                    mService.sendCommand(BleCommand.StartStopAnim.ordinal(), anim_status);
+                }
             }
         });
+
 
         mSpinnerPhy.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
@@ -271,7 +287,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                 mBtnDownload.setEnabled(true);
                 mBtnGZDownload.setEnabled(true);
                 btnConnectDisconnect.setText(R.string.disconnect);
-                mSpinnerResolution.setEnabled(true);
                 mSpinnerPhy.setEnabled(true);
                 break;
 
@@ -279,10 +294,6 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                 mBtnDownload.setEnabled(false);
                 mBtnGZDownload.setEnabled(false);
                 btnConnectDisconnect.setText(R.string.connect_bt_text);
-                mTextViewPictureStatus.setVisibility(View.INVISIBLE);
-                mTextViewPictureFpsStatus.setVisibility(View.INVISIBLE);
-                mSpinnerResolution.setEnabled(false);
-                mSpinnerResolution.setSelection(1);
                 mSpinnerPhy.setEnabled(false);
                 mSpinnerPhy.setSelection(0);
                 break;
@@ -344,6 +355,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                     mState = UART_PROFILE_DISCONNECTED;
                     mService.close();
                     mTextViewMtu.setText("-");
+                    mTextViewFrameTime.setText("-");
                     mTextViewConInt.setText("-");
                     mConnectionProgDialog.hide();
                     Log.d(TAG, "UART_DISCONNECT_MSG");
@@ -371,10 +383,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                 ByteBuffer byteBuffer = ByteBuffer.wrap(Arrays.copyOfRange(txValue, 1, 5));
                                 byteBuffer.order(ByteOrder.LITTLE_ENDIAN);
                                 int fileSize = byteBuffer.getInt();
-                                mBytesTotal = fileSize;
-                                mDataBuffer = new byte[fileSize];
                                 mTextViewFileLabel.setText("Incoming file: " + fileSize + " bytes.");
-                                mBytesTransfered = 0;
                                 mStartTimeImageTransfer = System.currentTimeMillis();
                                 break;
 
@@ -401,6 +410,11 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
                                 else {
                                     writeToLog("Parameters updated.", AppLogFontType.APP_NORMAL);
                                 }
+
+                                ByteBuffer frame_timeBB = ByteBuffer.wrap(Arrays.copyOfRange(txValue, 7, 9));
+                                frame_timeBB.order(ByteOrder.LITTLE_ENDIAN);
+                                short frame_time = frame_timeBB.getShort();
+                                updateFrameTimeOnDeviceTextView(frame_time);
                                 break;
                             case setOutgoingFileParams:
                                 OutgoingFileParams ofp_cmd = OutgoingFileParams.values()[txValue[1]];
@@ -442,7 +456,7 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         }
 
         if (action.equals(ImageTransferService.ACTION_GATT_TRANSFER_FINISHED)) {
-            mUploadActive = false;
+
             setGuiByAppMode(AppRunMode.Connected);
         }
 
@@ -587,6 +601,10 @@ public class MainActivity extends Activity implements RadioGroup.OnCheckedChange
         byte[] mCompressedByteArray = os.toByteArray();
         os.close();
         return mCompressedByteArray;
+    }
+
+    void updateFrameTimeOnDeviceTextView(short ms){
+        mTextView_FrameTimeOnDevice.setText(String.format(getString(R.string.FramePeriodOnDev), ms));
     }
 
     @Override
